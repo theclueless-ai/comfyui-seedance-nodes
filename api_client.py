@@ -3,7 +3,7 @@ import requests
 
 
 BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
-TASK_ENDPOINT = "/contents/generations/tasks"
+TASK_ENDPOINT = "/content_generation/tasks"
 
 
 class SeedanceAPIClient:
