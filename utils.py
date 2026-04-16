@@ -6,6 +6,11 @@ import requests
 import numpy as np
 from PIL import Image
 
+try:
+    import torch
+except ImportError:
+    torch = None
+
 
 # ------------------------------------------------------------------
 # ComfyUI tensor  →  base64 data-URI
@@ -53,6 +58,48 @@ def download_video(video_url: str, output_dir: str, prefix: str = "seedance") ->
 
     print(f"[Seedance] Video saved: {filepath}")
     return filepath
+
+
+# ------------------------------------------------------------------
+# Last-frame extraction
+# ------------------------------------------------------------------
+
+def extract_last_frame(video_path: str):
+    """
+    Extract the last frame of a video file and return it as a ComfyUI
+    IMAGE tensor  (1, H, W, C)  float32 in [0, 1].
+
+    Requires opencv-python (cv2).
+    """
+    import cv2
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"[Seedance] Could not open video: {video_path}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames > 1:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames - 1)
+
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret:
+        raise RuntimeError(
+            f"[Seedance] Could not read last frame from: {video_path}"
+        )
+
+    # cv2 reads as BGR → convert to RGB
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    arr = frame_rgb.astype(np.float32) / 255.0  # (H, W, C)
+
+    if torch is not None:
+        tensor = torch.from_numpy(arr).unsqueeze(0)  # (1, H, W, C)
+    else:
+        # Fallback: wrap in a list so ComfyUI still receives something iterable
+        tensor = arr[np.newaxis, ...]
+
+    return tensor
 
 
 # ------------------------------------------------------------------

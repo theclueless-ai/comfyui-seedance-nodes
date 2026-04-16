@@ -13,9 +13,14 @@ ComfyUI custom nodes for **BytePlus / ByteDance Seedance 2** video-generation AP
 | **Seedance – Image to Video (First + Last Frame)** | `Seedance/Video Generation` | Interpolate motion between two images. Supply the start and end frames; the model fills in the middle. |
 | **Seedance – Image to Video (Reference)** | `Seedance/Video Generation` | Use one to three reference images to guide the visual style/subject of the video (no frame-position locking). |
 
-All nodes output two `STRING` values:
-- **`video_url`** – the CDN URL returned by the API (valid for 48 hours)
-- **`video_path`** – the local path where the `.mp4` was downloaded (inside ComfyUI's output directory)
+All nodes output four values:
+
+| Output | Type | Description |
+|--------|------|-------------|
+| `video` | VIDEO (STRING fallback) | Native ComfyUI VIDEO object — connect directly to **Save Video** or any video preview node. Falls back to the file path STRING on older ComfyUI builds. |
+| `last_frame` | IMAGE | The final frame of the generated video as a ComfyUI IMAGE tensor. Connect to the next node's `first_frame` input to chain clips seamlessly. |
+| `video_url` | STRING | CDN URL returned by the API (valid for 48 hours). |
+| `video_path` | STRING | Local path where the `.mp4` was saved (inside ComfyUI's output directory). |
 
 ---
 
@@ -33,6 +38,8 @@ git clone https://github.com/YOUR_USERNAME/comfyui-seedance-nodes.git
 ```bash
 pip install -r ComfyUI/custom_nodes/comfyui-seedance-nodes/requirements.txt
 ```
+
+> **Note:** `opencv-python` is required to extract the last frame from generated videos. It is included in `requirements.txt`.
 
 ### 3. Configure your API key
 
@@ -105,7 +112,7 @@ The nodes will appear under the **Seedance / Video Generation** category in the 
 - **Cold-start latency** – the API queues tasks; `poll_interval=10` with `max_wait=600` works for most generations. Increase `max_wait` for 10-second videos at high resolution.
 - **Image inputs** – connect any ComfyUI IMAGE node (LoadImage, VAE Decode output, etc.) directly to the image inputs. The node converts the tensor to a PNG base64 data-URI automatically.
 - **URL overrides** – if your image is already hosted (e.g., on S3 or a CDN), paste the URL into the `*_url_override` / `*_url_*` fields to skip the base64 encoding step.
-- **Output** – videos are saved in `ComfyUI/output/` with a timestamp filename (`seedance_<timestamp>.mp4`). Use the `video_path` output to chain into other nodes (e.g., a video preview node).
+- **Output** – videos are saved in `ComfyUI/output/` with a timestamp filename (`seedance_<timestamp>.mp4`). The `video` output connects directly to **Save Video**; the `last_frame` IMAGE output connects to the next node's `first_frame` to chain multiple clips together.
 
 ---
 

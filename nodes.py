@@ -20,7 +20,24 @@ except ImportError:
     OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 
 from .api_client import SeedanceAPIClient
-from .utils import tensor_to_base64, download_video, resolve_api_key
+from .utils import tensor_to_base64, download_video, extract_last_frame, resolve_api_key
+
+# ──────────────────────────────────────────────────────────────────
+# VIDEO type detection – requires ComfyUI with comfy_api available
+# ──────────────────────────────────────────────────────────────────
+
+try:
+    from comfy_api.input_impl.video_types import VideoFromFile as _VideoFromFile
+    _VIDEO_TYPE = "VIDEO"
+
+    def _make_video(path: str):
+        return _VideoFromFile(path)
+
+except ImportError:
+    _VIDEO_TYPE = "STRING"
+
+    def _make_video(path: str):
+        return path
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -46,18 +63,28 @@ DURATION_OPTIONS = [5, 10]   # seconds – values accepted by the API
 # ──────────────────────────────────────────────────────────────────
 
 def _run_task(api_key: str, payload: dict, poll_interval: int, max_wait: int):
-    """Create a task, poll until done, download the video, return (url, path)."""
+    """
+    Create a task, poll until done, download the video.
+
+    Returns: (video, last_frame, video_url, video_path)
+      - video      : VideoFromFile object (or path STRING as fallback)
+      - last_frame : IMAGE tensor  (1, H, W, C) of the video's final frame
+      - video_url  : CDN URL string
+      - video_path : local .mp4 path string
+    """
     client = SeedanceAPIClient(api_key)
     task_id = client.create_task(payload)
     print(f"[Seedance] Task created: {task_id}")
-    result  = client.poll_task(task_id, poll_interval=poll_interval, max_wait=max_wait)
+    result = client.poll_task(task_id, poll_interval=poll_interval, max_wait=max_wait)
 
     video_url = result.get("content", {}).get("video_url", "")
     if not video_url:
         raise RuntimeError(f"[Seedance] No video_url in response: {result}")
 
     video_path = download_video(video_url, OUTPUT_DIR, prefix="seedance")
-    return video_url, video_path
+    video      = _make_video(video_path)
+    last_frame = extract_last_frame(video_path)
+    return video, last_frame, video_url, video_path
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -69,10 +96,10 @@ class SeedanceTextToVideo:
     Generate a video from a text prompt using the Seedance 2 API (T2V mode).
     """
 
-    CATEGORY    = "Seedance/Video Generation"
-    FUNCTION    = "generate"
-    RETURN_TYPES  = ("STRING", "STRING")
-    RETURN_NAMES  = ("video_url", "video_path")
+    CATEGORY     = "Seedance/Video Generation"
+    FUNCTION     = "generate"
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -121,8 +148,8 @@ class SeedanceTextToVideo:
             "generate_audio": generate_audio,
             "watermark": watermark,
         }
-        video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
-        return (video_url, video_path)
+        video, last_frame, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame, video_url, video_path)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -137,10 +164,10 @@ class SeedanceI2VFirstFrame:
     forward according to the text description.
     """
 
-    CATEGORY    = "Seedance/Video Generation"
-    FUNCTION    = "generate"
-    RETURN_TYPES  = ("STRING", "STRING")
-    RETURN_NAMES  = ("video_url", "video_path")
+    CATEGORY     = "Seedance/Video Generation"
+    FUNCTION     = "generate"
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -204,8 +231,8 @@ class SeedanceI2VFirstFrame:
             "generate_audio": generate_audio,
             "watermark": watermark,
         }
-        video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
-        return (video_url, video_path)
+        video, last_frame, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame, video_url, video_path)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -220,10 +247,10 @@ class SeedanceI2VFirstLastFrame:
     the motion between them guided by the text prompt.
     """
 
-    CATEGORY    = "Seedance/Video Generation"
-    FUNCTION    = "generate"
-    RETURN_TYPES  = ("STRING", "STRING")
-    RETURN_NAMES  = ("video_url", "video_path")
+    CATEGORY     = "Seedance/Video Generation"
+    FUNCTION     = "generate"
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -298,8 +325,8 @@ class SeedanceI2VFirstLastFrame:
             "generate_audio": generate_audio,
             "watermark": watermark,
         }
-        video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
-        return (video_url, video_path)
+        video, last_frame_out, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame_out, video_url, video_path)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -319,10 +346,10 @@ class SeedanceI2VReference:
     [Image 1], [Image 2], [Image 3], [Image 4].
     """
 
-    CATEGORY    = "Seedance/Video Generation"
-    FUNCTION    = "generate"
-    RETURN_TYPES  = ("STRING", "STRING")
-    RETURN_NAMES  = ("video_url", "video_path")
+    CATEGORY     = "Seedance/Video Generation"
+    FUNCTION     = "generate"
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -422,8 +449,8 @@ class SeedanceI2VReference:
             "generate_audio": generate_audio,
             "watermark": watermark,
         }
-        video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
-        return (video_url, video_path)
+        video, last_frame, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame, video_url, video_path)
 
 
 # ──────────────────────────────────────────────────────────────────
