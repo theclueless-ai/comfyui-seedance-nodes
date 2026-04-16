@@ -3,8 +3,7 @@ import requests
 
 
 BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
-TASK_ENDPOINT = "/content_generation/tasks"
-
+TASK_ENDPOINT = "/contents/generations/tasks"
 
 class SeedanceAPIClient:
     """Thin HTTP wrapper around the BytePlus Ark content-generation API."""
@@ -26,7 +25,8 @@ class SeedanceAPIClient:
         """Submit a generation task and return its task ID."""
         url = f"{self.base_url}{TASK_ENDPOINT}"
         resp = requests.post(url, json=payload, headers=self.headers, timeout=30)
-        resp.raise_for_status()
+        if not resp.ok:
+            raise RuntimeError(f"[Seedance] HTTP {resp.status_code} on POST {url} — {resp.text}")
         data = resp.json()
         task_id = data.get("id")
         if not task_id:
@@ -37,7 +37,8 @@ class SeedanceAPIClient:
         """Fetch the current status of a task."""
         url = f"{self.base_url}{TASK_ENDPOINT}/{task_id}"
         resp = requests.get(url, headers=self.headers, timeout=30)
-        resp.raise_for_status()
+        if not resp.ok:
+            raise RuntimeError(f"[Seedance] HTTP {resp.status_code} on GET {url} — {resp.text}")
         return resp.json()
 
     def poll_task(
