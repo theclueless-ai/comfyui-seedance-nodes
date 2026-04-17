@@ -15,6 +15,7 @@ Install
 
 Nodes available after installation
 -----------------------------------
+  • Seedance – Video Generator          (unified node, auto-detects mode)
   • Seedance – Text to Video
   • Seedance – Image to Video (First Frame)
   • Seedance – Image to Video (First + Last Frame)

@@ -5,6 +5,7 @@ ComfyUI custom nodes for BytePlus / ByteDance Seedance 2 video-generation API.
 
 Nodes
 -----
+SeedanceVideoGenerator       – Unified node (auto-detects mode from inputs)
 SeedanceTextToVideo          – Text → Video
 SeedanceI2VFirstFrame        – Image-to-Video  (first frame)
 SeedanceI2VFirstLastFrame    – Image-to-Video  (first + last frame)
@@ -54,8 +55,15 @@ SEEDANCE_REFERENCE_MODELS = [
     "dreamina-seedance-2-0-260128",  # kept as fallback option
 ]
 
-RATIO_OPTIONS  = ["16:9", "9:16", "1:1", "4:3", "3:4", "adaptive"]
-DURATION_OPTIONS = [5, 10]   # seconds – values accepted by the API
+# All models combined for the unified node
+ALL_MODELS = [
+    "dreamina-seedance-2-0-260128",
+    "seedance-1-0-lite-i2v-250428",
+]
+
+RATIO_OPTIONS      = ["16:9", "9:16", "1:1", "4:3", "3:4", "adaptive"]
+DURATION_OPTIONS   = [5, 10, 15]   # seconds – values accepted by the API
+RESOLUTION_OPTIONS = ["default", "480p", "720p"]
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -87,6 +95,210 @@ def _run_task(api_key: str, payload: dict, poll_interval: int, max_wait: int):
     return video, last_frame, video_url, video_path
 
 
+def _apply_resolution(payload: dict, resolution: str) -> dict:
+    """Add resolution to payload only when a specific value is chosen."""
+    if resolution and resolution != "default":
+        payload["resolution"] = resolution
+    return payload
+
+
+# ──────────────────────────────────────────────────────────────────
+# Unified Node – auto-detects mode from connected inputs
+# ──────────────────────────────────────────────────────────────────
+
+class SeedanceVideoGenerator:
+    """
+    Single unified Seedance node. Mode is auto-detected from connected inputs:
+
+      • No images connected           → Text-to-Video
+      • first_frame only              → Image-to-Video (first frame)
+      • first_frame + last_frame      → Image-to-Video (first + last frame)
+      • reference_image_1 (+ 2/3/4)  → Image-to-Video (reference images)
+
+    For reference mode use model seedance-1-0-lite-i2v-250428 and reference
+    each image in your prompt with [Image 1], [Image 2], etc.
+    """
+
+    CATEGORY     = "Seedance/Video Generation"
+    FUNCTION     = "generate"
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "api_key": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "tooltip": "BytePlus ARK API key. Leave empty to use ARK_API_KEY env variable.",
+                }),
+                "prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "A girl holding a fox, the camera slowly pulls out.",
+                    "tooltip": (
+                        "Text description of the video. "
+                        "In reference mode use [Image 1], [Image 2], etc. to reference images."
+                    ),
+                }),
+                "model": (ALL_MODELS, {
+                    "default": ALL_MODELS[0],
+                    "tooltip": (
+                        "dreamina-seedance-2-0-260128 → T2V / first-frame / first+last modes. "
+                        "seedance-1-0-lite-i2v-250428 → reference image mode."
+                    ),
+                }),
+                "ratio": (RATIO_OPTIONS, {"default": "16:9"}),
+                "duration": (DURATION_OPTIONS, {"default": 5}),
+                "resolution": (RESOLUTION_OPTIONS, {
+                    "default": "default",
+                    "tooltip": "Output resolution. 'default' lets the API decide.",
+                }),
+                "generate_audio": ("BOOLEAN", {"default": False}),
+                "watermark":      ("BOOLEAN", {"default": False}),
+                "poll_interval":  ("INT", {"default": 10, "min": 5, "max": 60,  "step": 5,
+                                           "tooltip": "Seconds between status-check requests."}),
+                "max_wait":       ("INT", {"default": 600, "min": 60, "max": 3600, "step": 60,
+                                           "tooltip": "Maximum seconds to wait for the task."}),
+            },
+            "optional": {
+                # ── I2V first-frame / first+last frame ──────────────────
+                "first_frame": ("IMAGE", {
+                    "tooltip": (
+                        "Connect to enable I2V mode. "
+                        "Alone → first-frame mode. With last_frame → interpolation mode."
+                    ),
+                }),
+                "last_frame": ("IMAGE", {
+                    "tooltip": "Connect together with first_frame to enable first+last interpolation mode.",
+                }),
+                "first_frame_url": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "tooltip": "Optional HTTP URL override for first_frame.",
+                }),
+                "last_frame_url": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "tooltip": "Optional HTTP URL override for last_frame.",
+                }),
+                # ── Reference images ─────────────────────────────────────
+                "reference_image_1": ("IMAGE", {
+                    "tooltip": "Connect to enable reference mode ([Image 1] in prompt).",
+                }),
+                "reference_image_2": ("IMAGE", {
+                    "tooltip": "Optional second reference image ([Image 2] in prompt).",
+                }),
+                "reference_image_3": ("IMAGE", {
+                    "tooltip": "Optional third reference image ([Image 3] in prompt).",
+                }),
+                "reference_image_4": ("IMAGE", {
+                    "tooltip": "Optional fourth reference image ([Image 4] in prompt).",
+                }),
+                "ref_url_1": ("STRING", {"default": "", "multiline": False,
+                                         "tooltip": "Optional HTTP URL override for reference image 1."}),
+                "ref_url_2": ("STRING", {"default": "", "multiline": False,
+                                         "tooltip": "Optional HTTP URL override for reference image 2."}),
+                "ref_url_3": ("STRING", {"default": "", "multiline": False,
+                                         "tooltip": "Optional HTTP URL override for reference image 3."}),
+                "ref_url_4": ("STRING", {"default": "", "multiline": False,
+                                         "tooltip": "Optional HTTP URL override for reference image 4."}),
+            },
+        }
+
+    def generate(
+        self,
+        api_key,
+        prompt,
+        model,
+        ratio,
+        duration,
+        resolution,
+        generate_audio,
+        watermark,
+        poll_interval,
+        max_wait,
+        first_frame=None,
+        last_frame=None,
+        first_frame_url="",
+        last_frame_url="",
+        reference_image_1=None,
+        reference_image_2=None,
+        reference_image_3=None,
+        reference_image_4=None,
+        ref_url_1="",
+        ref_url_2="",
+        ref_url_3="",
+        ref_url_4="",
+    ):
+        key = resolve_api_key(api_key)
+
+        def _resolve(tensor, url_override):
+            if url_override and url_override.strip().startswith("http"):
+                return url_override.strip()
+            if tensor is None:
+                return None
+            return tensor_to_base64(tensor)
+
+        # ── Auto-detect mode ─────────────────────────────────────────
+        has_ref1  = reference_image_1 is not None or (ref_url_1 and ref_url_1.strip().startswith("http"))
+        has_first = first_frame is not None        or (first_frame_url and first_frame_url.strip().startswith("http"))
+        has_last  = last_frame is not None         or (last_frame_url  and last_frame_url.strip().startswith("http"))
+
+        if has_ref1:
+            mode = "reference"
+        elif has_first and has_last:
+            mode = "first_last"
+        elif has_first:
+            mode = "first_frame"
+        else:
+            mode = "t2v"
+
+        print(f"[Seedance] Mode detected: {mode}")
+
+        # ── Build content array ──────────────────────────────────────
+        content = [{"type": "text", "text": prompt}]
+
+        if mode == "first_frame":
+            img_url = _resolve(first_frame, first_frame_url)
+            content.append({"type": "image_url", "image_url": {"url": img_url}})
+
+        elif mode == "first_last":
+            first_url = _resolve(first_frame, first_frame_url)
+            last_url  = _resolve(last_frame,  last_frame_url)
+            content.append({"type": "image_url", "image_url": {"url": first_url}, "role": "first_frame"})
+            content.append({"type": "image_url", "image_url": {"url": last_url},  "role": "last_frame"})
+
+        elif mode == "reference":
+            refs = [
+                (reference_image_1, ref_url_1),
+                (reference_image_2, ref_url_2),
+                (reference_image_3, ref_url_3),
+                (reference_image_4, ref_url_4),
+            ]
+            for tensor, url_override in refs:
+                resolved = _resolve(tensor, url_override)
+                if resolved:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": resolved},
+                        "role": "reference_image",
+                    })
+
+        payload = {
+            "model":          model,
+            "content":        content,
+            "ratio":          ratio,
+            "duration":       duration,
+            "generate_audio": generate_audio,
+            "watermark":      watermark,
+        }
+        _apply_resolution(payload, resolution)
+
+        video, last_frame_out, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame_out, video_url, video_path)
+
+
 # ──────────────────────────────────────────────────────────────────
 # Node 1 – Text to Video
 # ──────────────────────────────────────────────────────────────────
@@ -115,15 +327,19 @@ class SeedanceTextToVideo:
                     "default": "A girl holding a fox, the camera slowly pulls out.",
                     "tooltip": "Text description of the video to generate.",
                 }),
-                "model": (SEEDANCE_MODELS, {"default": SEEDANCE_MODELS[0]}),
-                "ratio": (RATIO_OPTIONS, {"default": "16:9"}),
-                "duration": (DURATION_OPTIONS, {"default": 5}),
+                "model":          (SEEDANCE_MODELS, {"default": SEEDANCE_MODELS[0]}),
+                "ratio":          (RATIO_OPTIONS,   {"default": "16:9"}),
+                "duration":       (DURATION_OPTIONS, {"default": 5}),
+                "resolution":     (RESOLUTION_OPTIONS, {
+                    "default": "default",
+                    "tooltip": "Output resolution. 'default' lets the API decide.",
+                }),
                 "generate_audio": ("BOOLEAN", {"default": False}),
-                "watermark": ("BOOLEAN", {"default": False}),
-                "poll_interval": ("INT", {"default": 10, "min": 5, "max": 60, "step": 5,
-                                          "tooltip": "Seconds between status-check requests."}),
-                "max_wait": ("INT",  {"default": 600, "min": 60, "max": 3600, "step": 60,
-                                      "tooltip": "Maximum seconds to wait for the task."}),
+                "watermark":      ("BOOLEAN", {"default": False}),
+                "poll_interval":  ("INT", {"default": 10, "min": 5, "max": 60,   "step": 5,
+                                           "tooltip": "Seconds between status-check requests."}),
+                "max_wait":       ("INT", {"default": 600, "min": 60, "max": 3600, "step": 60,
+                                           "tooltip": "Maximum seconds to wait for the task."}),
             }
         }
 
@@ -134,6 +350,7 @@ class SeedanceTextToVideo:
         model,
         ratio,
         duration,
+        resolution,
         generate_audio,
         watermark,
         poll_interval,
@@ -141,13 +358,14 @@ class SeedanceTextToVideo:
     ):
         key = resolve_api_key(api_key)
         payload = {
-            "model": model,
-            "content": [{"type": "text", "text": prompt}],
-            "ratio": ratio,
-            "duration": duration,
+            "model":          model,
+            "content":        [{"type": "text", "text": prompt}],
+            "ratio":          ratio,
+            "duration":       duration,
             "generate_audio": generate_audio,
-            "watermark": watermark,
+            "watermark":      watermark,
         }
+        _apply_resolution(payload, resolution)
         video, last_frame, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
         return (video, last_frame, video_url, video_path)
 
@@ -182,13 +400,14 @@ class SeedanceI2VFirstFrame:
                     "default": "The camera slowly zooms out.",
                     "tooltip": "Describes how the image should be animated.",
                 }),
-                "model": (SEEDANCE_MODELS, {"default": SEEDANCE_MODELS[0]}),
-                "ratio": (RATIO_OPTIONS, {"default": "adaptive"}),
-                "duration": (DURATION_OPTIONS, {"default": 5}),
+                "model":          (SEEDANCE_MODELS, {"default": SEEDANCE_MODELS[0]}),
+                "ratio":          (RATIO_OPTIONS,   {"default": "adaptive"}),
+                "duration":       (DURATION_OPTIONS, {"default": 5}),
+                "resolution":     (RESOLUTION_OPTIONS, {"default": "default"}),
                 "generate_audio": ("BOOLEAN", {"default": False}),
-                "watermark": ("BOOLEAN", {"default": False}),
-                "poll_interval": ("INT", {"default": 10, "min": 5, "max": 60, "step": 5}),
-                "max_wait":      ("INT",  {"default": 600, "min": 60, "max": 3600, "step": 60}),
+                "watermark":      ("BOOLEAN", {"default": False}),
+                "poll_interval":  ("INT", {"default": 10, "min": 5, "max": 60,   "step": 5}),
+                "max_wait":       ("INT", {"default": 600, "min": 60, "max": 3600, "step": 60}),
             },
             "optional": {
                 "image_url_override": ("STRING", {
@@ -207,6 +426,7 @@ class SeedanceI2VFirstFrame:
         model,
         ratio,
         duration,
+        resolution,
         generate_audio,
         watermark,
         poll_interval,
@@ -221,16 +441,17 @@ class SeedanceI2VFirstFrame:
             img_url = tensor_to_base64(first_frame)
 
         payload = {
-            "model": model,
+            "model":   model,
             "content": [
-                {"type": "text", "text": prompt},
+                {"type": "text",      "text": prompt},
                 {"type": "image_url", "image_url": {"url": img_url}},
             ],
-            "ratio": ratio,
-            "duration": duration,
+            "ratio":          ratio,
+            "duration":       duration,
             "generate_audio": generate_audio,
-            "watermark": watermark,
+            "watermark":      watermark,
         }
+        _apply_resolution(payload, resolution)
         video, last_frame, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
         return (video, last_frame, video_url, video_path)
 
@@ -256,20 +477,21 @@ class SeedanceI2VFirstLastFrame:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "api_key": ("STRING", {"default": "", "multiline": False}),
-                "first_frame": ("IMAGE", {"tooltip": "First frame of the output video."}),
-                "last_frame":  ("IMAGE", {"tooltip": "Last  frame of the output video."}),
+                "api_key":     ("STRING", {"default": "", "multiline": False}),
+                "first_frame": ("IMAGE",  {"tooltip": "First frame of the output video."}),
+                "last_frame":  ("IMAGE",  {"tooltip": "Last  frame of the output video."}),
                 "prompt": ("STRING", {
                     "multiline": True,
                     "default": "Smooth camera movement between the two frames.",
                 }),
-                "model": (SEEDANCE_MODELS, {"default": SEEDANCE_MODELS[0]}),
-                "ratio": (RATIO_OPTIONS, {"default": "adaptive"}),
-                "duration": (DURATION_OPTIONS, {"default": 5}),
+                "model":          (SEEDANCE_MODELS, {"default": SEEDANCE_MODELS[0]}),
+                "ratio":          (RATIO_OPTIONS,   {"default": "adaptive"}),
+                "duration":       (DURATION_OPTIONS, {"default": 5}),
+                "resolution":     (RESOLUTION_OPTIONS, {"default": "default"}),
                 "generate_audio": ("BOOLEAN", {"default": False}),
-                "watermark": ("BOOLEAN", {"default": False}),
-                "poll_interval": ("INT", {"default": 10, "min": 5, "max": 60, "step": 5}),
-                "max_wait":      ("INT",  {"default": 600, "min": 60, "max": 3600, "step": 60}),
+                "watermark":      ("BOOLEAN", {"default": False}),
+                "poll_interval":  ("INT", {"default": 10, "min": 5, "max": 60,   "step": 5}),
+                "max_wait":       ("INT", {"default": 600, "min": 60, "max": 3600, "step": 60}),
             },
             "optional": {
                 "first_frame_url": ("STRING", {"default": "", "multiline": False,
@@ -288,6 +510,7 @@ class SeedanceI2VFirstLastFrame:
         model,
         ratio,
         duration,
+        resolution,
         generate_audio,
         watermark,
         poll_interval,
@@ -306,25 +529,18 @@ class SeedanceI2VFirstLastFrame:
         last_url  = _resolve(last_frame,  last_frame_url)
 
         payload = {
-            "model": model,
+            "model":   model,
             "content": [
                 {"type": "text", "text": prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": first_url},
-                    "role": "first_frame",
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {"url": last_url},
-                    "role": "last_frame",
-                },
+                {"type": "image_url", "image_url": {"url": first_url}, "role": "first_frame"},
+                {"type": "image_url", "image_url": {"url": last_url},  "role": "last_frame"},
             ],
-            "ratio": ratio,
-            "duration": duration,
+            "ratio":          ratio,
+            "duration":       duration,
             "generate_audio": generate_audio,
-            "watermark": watermark,
+            "watermark":      watermark,
         }
+        _apply_resolution(payload, resolution)
         video, last_frame_out, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
         return (video, last_frame_out, video_url, video_path)
 
@@ -355,8 +571,8 @@ class SeedanceI2VReference:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "api_key": ("STRING", {"default": "", "multiline": False}),
-                "reference_image_1": ("IMAGE", {"tooltip": "Primary reference image ([Image 1] in prompt)."}),
+                "api_key":           ("STRING", {"default": "", "multiline": False}),
+                "reference_image_1": ("IMAGE",  {"tooltip": "Primary reference image ([Image 1] in prompt)."}),
                 "prompt": ("STRING", {
                     "multiline": True,
                     "default": (
@@ -366,13 +582,14 @@ class SeedanceI2VReference:
                     "tooltip": "Reference each image with [Image 1], [Image 2], etc.",
                 }),
                 # Reference I2V uses its own dedicated model
-                "model": (SEEDANCE_REFERENCE_MODELS, {"default": SEEDANCE_REFERENCE_MODELS[0]}),
-                "ratio": (RATIO_OPTIONS, {"default": "16:9"}),
-                "duration": (DURATION_OPTIONS, {"default": 5}),
+                "model":          (SEEDANCE_REFERENCE_MODELS, {"default": SEEDANCE_REFERENCE_MODELS[0]}),
+                "ratio":          (RATIO_OPTIONS,   {"default": "16:9"}),
+                "duration":       (DURATION_OPTIONS, {"default": 5}),
+                "resolution":     (RESOLUTION_OPTIONS, {"default": "default"}),
                 "generate_audio": ("BOOLEAN", {"default": False}),
-                "watermark": ("BOOLEAN", {"default": False}),
-                "poll_interval": ("INT", {"default": 10, "min": 5, "max": 60, "step": 5}),
-                "max_wait":      ("INT",  {"default": 600, "min": 60, "max": 3600, "step": 60}),
+                "watermark":      ("BOOLEAN", {"default": False}),
+                "poll_interval":  ("INT", {"default": 10, "min": 5, "max": 60,   "step": 5}),
+                "max_wait":       ("INT", {"default": 600, "min": 60, "max": 3600, "step": 60}),
             },
             "optional": {
                 # The API supports 1-4 reference images
@@ -398,6 +615,7 @@ class SeedanceI2VReference:
         model,
         ratio,
         duration,
+        resolution,
         generate_audio,
         watermark,
         poll_interval,
@@ -433,7 +651,7 @@ class SeedanceI2VReference:
                 content.append({
                     "type": "image_url",
                     "image_url": {"url": resolved},
-                    "role": "reference_image",   # ← correct role per API docs
+                    "role": "reference_image",
                 })
 
         if len(content) == 1:
@@ -442,13 +660,14 @@ class SeedanceI2VReference:
             )
 
         payload = {
-            "model": model,
-            "content": content,
-            "ratio": ratio,
-            "duration": duration,
+            "model":          model,
+            "content":        content,
+            "ratio":          ratio,
+            "duration":       duration,
             "generate_audio": generate_audio,
-            "watermark": watermark,
+            "watermark":      watermark,
         }
+        _apply_resolution(payload, resolution)
         video, last_frame, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
         return (video, last_frame, video_url, video_path)
 
@@ -458,6 +677,7 @@ class SeedanceI2VReference:
 # ──────────────────────────────────────────────────────────────────
 
 NODE_CLASS_MAPPINGS = {
+    "SeedanceVideoGenerator":      SeedanceVideoGenerator,
     "SeedanceTextToVideo":         SeedanceTextToVideo,
     "SeedanceI2VFirstFrame":       SeedanceI2VFirstFrame,
     "SeedanceI2VFirstLastFrame":   SeedanceI2VFirstLastFrame,
@@ -465,6 +685,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "SeedanceVideoGenerator":      "Seedance – Video Generator",
     "SeedanceTextToVideo":         "Seedance – Text to Video",
     "SeedanceI2VFirstFrame":       "Seedance – Image to Video (First Frame)",
     "SeedanceI2VFirstLastFrame":   "Seedance – Image to Video (First + Last Frame)",
