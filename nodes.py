@@ -79,8 +79,10 @@ ALL_MODELS = [
 ]
 
 RATIO_OPTIONS      = ["16:9", "9:16", "1:1", "4:3", "3:4", "adaptive"]
-DURATION_OPTIONS   = [5, 10, 15]
 RESOLUTION_OPTIONS = ["default", "480p", "720p", "1080p"]
+
+_DURATION = ("INT", {"default": 5, "min": 4, "max": 15, "step": 1,
+                     "tooltip": "Video duration in seconds. Seedance 2.0 supports 4–15 s."})
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -289,7 +291,7 @@ class SeedanceVideoGenerator:
                     ),
                 }),
                 "ratio":             (RATIO_OPTIONS,      {"default": "16:9"}),
-                "duration":          (DURATION_OPTIONS,   {"default": 5}),
+                "duration":          _DURATION,
                 "resolution":        (RESOLUTION_OPTIONS, {
                     "default": "default",
                     "tooltip": "Output resolution. 'default' lets the API decide.",
@@ -476,7 +478,7 @@ class SeedanceTextToVideo:
                 }),
                 "model":             (SEEDANCE_MODELS,    {"default": SEEDANCE_MODELS[0]}),
                 "ratio":             (RATIO_OPTIONS,      {"default": "16:9"}),
-                "duration":          (DURATION_OPTIONS,   {"default": 5}),
+                "duration":          _DURATION,
                 "resolution":        (RESOLUTION_OPTIONS, {
                     "default": "default",
                     "tooltip": "Output resolution. 'default' lets the API decide.",
@@ -570,7 +572,7 @@ class SeedanceI2VFirstFrame:
                 }),
                 "model":             (SEEDANCE_MODELS,    {"default": SEEDANCE_MODELS[0]}),
                 "ratio":             (RATIO_OPTIONS,      {"default": "adaptive"}),
-                "duration":          (DURATION_OPTIONS,   {"default": 5}),
+                "duration":          _DURATION,
                 "resolution":        (RESOLUTION_OPTIONS, {"default": "default"}),
                 "generate_audio":    ("BOOLEAN", {"default": False}),
                 "watermark":         ("BOOLEAN", {"default": False}),
@@ -672,7 +674,7 @@ class SeedanceI2VFirstLastFrame:
                 }),
                 "model":             (SEEDANCE_MODELS,    {"default": SEEDANCE_MODELS[0]}),
                 "ratio":             (RATIO_OPTIONS,      {"default": "adaptive"}),
-                "duration":          (DURATION_OPTIONS,   {"default": 5}),
+                "duration":          _DURATION,
                 "resolution":        (RESOLUTION_OPTIONS, {"default": "default"}),
                 "generate_audio":    ("BOOLEAN", {"default": False}),
                 "watermark":         ("BOOLEAN", {"default": False}),
@@ -788,7 +790,7 @@ class SeedanceI2VReference:
                 }),
                 "model":             (SEEDANCE_REFERENCE_MODELS, {"default": SEEDANCE_REFERENCE_MODELS[0]}),
                 "ratio":             (RATIO_OPTIONS,             {"default": "16:9"}),
-                "duration":          (DURATION_OPTIONS,          {"default": 5}),
+                "duration":          _DURATION,
                 "resolution":        (RESOLUTION_OPTIONS,        {"default": "default"}),
                 "generate_audio":    ("BOOLEAN", {"default": False}),
                 "watermark":         ("BOOLEAN", {"default": False}),
