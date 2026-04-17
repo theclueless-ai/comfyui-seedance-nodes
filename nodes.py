@@ -149,6 +149,15 @@ def _run_task(api_key: str, payload: dict, poll_interval: int, max_wait: int):
 
     Returns: (video, last_frame, all_frames, video_url, video_path)
     """
+    # Validate reference_audio constraint before hitting the API
+    roles = {item.get("role") for item in payload.get("content", [])}
+    if "reference_audio" in roles and not (roles & {"reference_image", "reference_video"}):
+        raise ValueError(
+            "[Seedance] reference_audio cannot be the only reference input. "
+            "The API requires at least one reference image or reference video alongside the audio. "
+            "Connect a reference image or video to the node."
+        )
+
     client  = SeedanceAPIClient(api_key)
     task_id = client.create_task(payload)
     print(f"[Seedance] Task created: {task_id}")
