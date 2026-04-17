@@ -10,6 +10,10 @@ SeedanceTextToVideo          – Text → Video
 SeedanceI2VFirstFrame        – Image-to-Video  (first frame)
 SeedanceI2VFirstLastFrame    – Image-to-Video  (first + last frame)
 SeedanceI2VReference         – Image-to-Video  (reference image style)
+
+All nodes accept reference video and audio as either:
+  • A native ComfyUI VIDEO / AUDIO input (takes priority), or
+  • A plain HTTP URL string
 """
 
 import io
@@ -30,7 +34,15 @@ except ImportError:
     OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 
 from .api_client import SeedanceAPIClient
-from .utils import tensor_to_base64, download_video, extract_last_frame, extract_all_frames, resolve_api_key
+from .utils import (
+    tensor_to_base64,
+    audio_to_base64,
+    video_to_base64,
+    download_video,
+    extract_last_frame,
+    extract_all_frames,
+    resolve_api_key,
+)
 
 # ──────────────────────────────────────────────────────────────────
 # VIDEO type detection – requires ComfyUI with comfy_api available
@@ -74,16 +86,60 @@ RESOLUTION_OPTIONS = ["default", "480p", "720p"]
 
 
 # ──────────────────────────────────────────────────────────────────
+# Shared optional input block for reference video + audio
+#
+# Each node exposes four optional fields:
+#   reference_video     – native ComfyUI VIDEO socket
+#   reference_video_url – fallback HTTP URL string
+#   reference_audio     – native ComfyUI AUDIO socket
+#   reference_audio_url – fallback HTTP URL string
+#
+# Native type always wins over URL when both are provided.
+# ──────────────────────────────────────────────────────────────────
+
+_MEDIA_REF_OPTIONAL = {
+    "reference_video": (_VIDEO_TYPE, {
+        "tooltip": (
+            "Connect any ComfyUI VIDEO node (Load Video, another Seedance output, etc.). "
+            "Takes priority over reference_video_url. Reference as [Video 1] in the prompt."
+        ),
+    }),
+    "reference_video_url": ("STRING", {
+        "default":   "",
+        "multiline": False,
+        "tooltip":   (
+            "HTTP URL of a reference video. Used only when reference_video is not connected. "
+            "Reference as [Video 1] in the prompt."
+        ),
+    }),
+    "reference_audio": ("AUDIO", {
+        "tooltip": (
+            "Connect any ComfyUI AUDIO node (Load Audio, etc.). "
+            "Takes priority over reference_audio_url. Reference as [Audio 1] in the prompt."
+        ),
+    }),
+    "reference_audio_url": ("STRING", {
+        "default":   "",
+        "multiline": False,
+        "tooltip":   (
+            "HTTP URL of a reference audio track. Used only when reference_audio is not connected. "
+            "Reference as [Audio 1] in the prompt."
+        ),
+    }),
+}
+
+
+# ──────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────
 
 def _url_to_image_tensor(url: str):
     """Download an image URL and return a ComfyUI IMAGE tensor (1, H, W, C)."""
-    from PIL import Image
+    from PIL import Image as _Image
     resp = requests.get(url, timeout=60)
     resp.raise_for_status()
-    img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-    arr = np.array(img).astype(np.float32) / 255.0  # (H, W, C)
+    img = _Image.open(io.BytesIO(resp.content)).convert("RGB")
+    arr = np.array(img).astype(np.float32) / 255.0
     if torch is not None:
         return torch.from_numpy(arr).unsqueeze(0)
     return arr[np.newaxis, ...]
@@ -94,12 +150,6 @@ def _run_task(api_key: str, payload: dict, poll_interval: int, max_wait: int):
     Create a task, poll until done, download the video.
 
     Returns: (video, last_frame, all_frames, video_url, video_path)
-      - video      : VideoFromFile object (or path STRING as fallback)
-      - last_frame : IMAGE tensor (1, H, W, C) – from API if return_last_frame
-                     was requested, otherwise extracted with OpenCV
-      - all_frames : IMAGE tensor (N, H, W, C) – every frame of the video
-      - video_url  : CDN URL string
-      - video_path : local .mp4 path string
     """
     client  = SeedanceAPIClient(api_key)
     task_id = client.create_task(payload)
@@ -140,38 +190,47 @@ def _apply_resolution(payload: dict, resolution: str) -> None:
         payload["resolution"] = resolution
 
 
-def _append_reference_media(content: list, video_url: str, audio_url: str) -> None:
+def _resolve_media(native_video, video_url: str, native_audio, audio_url: str):
+    """
+    Resolve the reference video and audio to a data-URI or HTTP URL string.
+    Native ComfyUI types take priority over URL strings.
+
+    Returns: (resolved_video_str, resolved_audio_str)
+      Empty string means "not provided".
+    """
+    resolved_video = ""
+    if native_video is not None:
+        resolved_video = video_to_base64(native_video)
+    elif video_url and video_url.strip().startswith("http"):
+        resolved_video = video_url.strip()
+
+    resolved_audio = ""
+    if native_audio is not None:
+        resolved_audio = audio_to_base64(native_audio)
+    elif audio_url and audio_url.strip().startswith("http"):
+        resolved_audio = audio_url.strip()
+
+    return resolved_video, resolved_audio
+
+
+def _append_reference_media(content: list, video_str: str, audio_str: str) -> None:
     """
     Append reference_video and/or reference_audio entries to the content array.
     Reference them in the prompt as [Video 1] and [Audio 1] respectively.
+    Accepts both HTTP URLs and base64 data-URIs.
     """
-    if video_url and video_url.strip().startswith("http"):
+    if video_str:
         content.append({
             "type":      "video_url",
             "role":      "reference_video",
-            "video_url": {"url": video_url.strip()},
+            "video_url": {"url": video_str},
         })
-    if audio_url and audio_url.strip().startswith("http"):
+    if audio_str:
         content.append({
             "type":      "audio_url",
             "role":      "reference_audio",
-            "audio_url": {"url": audio_url.strip()},
+            "audio_url": {"url": audio_str},
         })
-
-
-# Shared optional inputs present on every node
-_MEDIA_REF_OPTIONAL = {
-    "reference_video_url": ("STRING", {
-        "default":   "",
-        "multiline": False,
-        "tooltip":   "Optional HTTP URL of a reference video. Reference it in your prompt as [Video 1].",
-    }),
-    "reference_audio_url": ("STRING", {
-        "default":   "",
-        "multiline": False,
-        "tooltip":   "Optional HTTP URL of a reference audio track. Reference it in your prompt as [Audio 1].",
-    }),
-}
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -187,11 +246,9 @@ class SeedanceVideoGenerator:
       • first_frame + last_frame      → Image-to-Video (first + last frame)
       • reference_image_1 (+ 2/3/4)  → Image-to-Video (reference images)
 
-    All modes accept an optional reference video ([Video 1] in prompt),
-    reference audio ([Audio 1] in prompt), and return_last_frame.
-
-    For reference-image mode use model seedance-1-0-lite-i2v-250428 and
-    reference each image in your prompt with [Image 1], [Image 2], etc.
+    Reference video and audio can be connected as native ComfyUI VIDEO/AUDIO
+    nodes or provided as HTTP URLs. Reference them in the prompt as [Video 1]
+    and [Audio 1].
     """
 
     CATEGORY     = "Seedance/Video Generation"
@@ -224,19 +281,19 @@ class SeedanceVideoGenerator:
                         "seedance-1-0-lite-i2v-250428 → reference image mode."
                     ),
                 }),
-                "ratio":           (RATIO_OPTIONS,      {"default": "16:9"}),
-                "duration":        (DURATION_OPTIONS,   {"default": 5}),
-                "resolution":      (RESOLUTION_OPTIONS, {
+                "ratio":             (RATIO_OPTIONS,      {"default": "16:9"}),
+                "duration":          (DURATION_OPTIONS,   {"default": 5}),
+                "resolution":        (RESOLUTION_OPTIONS, {
                     "default": "default",
                     "tooltip": "Output resolution. 'default' lets the API decide.",
                 }),
-                "generate_audio":  ("BOOLEAN", {"default": False}),
-                "watermark":       ("BOOLEAN", {"default": False}),
+                "generate_audio":    ("BOOLEAN", {"default": False}),
+                "watermark":         ("BOOLEAN", {"default": False}),
                 "return_last_frame": ("BOOLEAN", {
                     "default": True,
                     "tooltip": (
-                        "Ask the API to return a PNG of the last frame (no watermark). "
-                        "Useful for chaining consecutive videos: connect last_frame → first_frame of the next node."
+                        "Ask the API to return a watermark-free PNG of the last frame. "
+                        "Connect last_frame → first_frame of the next node to chain videos."
                     ),
                 }),
                 "poll_interval": ("INT", {"default": 10, "min": 5,  "max": 60,   "step": 5,
@@ -253,38 +310,26 @@ class SeedanceVideoGenerator:
                     ),
                 }),
                 "last_frame": ("IMAGE", {
-                    "tooltip": "Connect together with first_frame to enable first+last interpolation mode.",
+                    "tooltip": "Connect with first_frame to enable first+last interpolation mode.",
                 }),
-                "first_frame_url": ("STRING", {
-                    "default": "", "multiline": False,
-                    "tooltip": "Optional HTTP URL override for first_frame.",
-                }),
-                "last_frame_url": ("STRING", {
-                    "default": "", "multiline": False,
-                    "tooltip": "Optional HTTP URL override for last_frame.",
-                }),
+                "first_frame_url": ("STRING", {"default": "", "multiline": False,
+                                               "tooltip": "HTTP URL override for first_frame."}),
+                "last_frame_url":  ("STRING", {"default": "", "multiline": False,
+                                               "tooltip": "HTTP URL override for last_frame."}),
                 # ── Reference images ──────────────────────────────────
-                "reference_image_1": ("IMAGE", {
-                    "tooltip": "Connect to enable reference mode ([Image 1] in prompt).",
-                }),
-                "reference_image_2": ("IMAGE", {
-                    "tooltip": "Optional second reference image ([Image 2] in prompt).",
-                }),
-                "reference_image_3": ("IMAGE", {
-                    "tooltip": "Optional third reference image ([Image 3] in prompt).",
-                }),
-                "reference_image_4": ("IMAGE", {
-                    "tooltip": "Optional fourth reference image ([Image 4] in prompt).",
-                }),
+                "reference_image_1": ("IMAGE", {"tooltip": "Enables reference mode ([Image 1] in prompt)."}),
+                "reference_image_2": ("IMAGE", {"tooltip": "Second reference image ([Image 2] in prompt)."}),
+                "reference_image_3": ("IMAGE", {"tooltip": "Third  reference image ([Image 3] in prompt)."}),
+                "reference_image_4": ("IMAGE", {"tooltip": "Fourth reference image ([Image 4] in prompt)."}),
                 "ref_url_1": ("STRING", {"default": "", "multiline": False,
-                                         "tooltip": "Optional HTTP URL override for reference image 1."}),
+                                         "tooltip": "HTTP URL override for reference image 1."}),
                 "ref_url_2": ("STRING", {"default": "", "multiline": False,
-                                         "tooltip": "Optional HTTP URL override for reference image 2."}),
+                                         "tooltip": "HTTP URL override for reference image 2."}),
                 "ref_url_3": ("STRING", {"default": "", "multiline": False,
-                                         "tooltip": "Optional HTTP URL override for reference image 3."}),
+                                         "tooltip": "HTTP URL override for reference image 3."}),
                 "ref_url_4": ("STRING", {"default": "", "multiline": False,
-                                         "tooltip": "Optional HTTP URL override for reference image 4."}),
-                # ── Reference video / audio ───────────────────────────
+                                         "tooltip": "HTTP URL override for reference image 4."}),
+                # ── Reference video / audio (native or URL) ───────────
                 **_MEDIA_REF_OPTIONAL,
             },
         }
@@ -302,10 +347,12 @@ class SeedanceVideoGenerator:
         return_last_frame,
         poll_interval,
         max_wait,
+        # I2V inputs
         first_frame=None,
         last_frame=None,
         first_frame_url="",
         last_frame_url="",
+        # Reference images
         reference_image_1=None,
         reference_image_2=None,
         reference_image_3=None,
@@ -314,18 +361,22 @@ class SeedanceVideoGenerator:
         ref_url_2="",
         ref_url_3="",
         ref_url_4="",
+        # Reference video / audio
+        reference_video=None,
         reference_video_url="",
+        reference_audio=None,
         reference_audio_url="",
     ):
         key = resolve_api_key(api_key)
 
-        def _resolve(tensor, url_override):
+        def _resolve_img(tensor, url_override):
             if url_override and url_override.strip().startswith("http"):
                 return url_override.strip()
             if tensor is None:
                 return None
             return tensor_to_base64(tensor)
 
+        # ── Auto-detect mode ──────────────────────────────────────────
         has_ref1  = reference_image_1 is not None or (ref_url_1 and ref_url_1.strip().startswith("http"))
         has_first = first_frame is not None        or (first_frame_url and first_frame_url.strip().startswith("http"))
         has_last  = last_frame is not None         or (last_frame_url  and last_frame_url.strip().startswith("http"))
@@ -341,35 +392,37 @@ class SeedanceVideoGenerator:
 
         print(f"[Seedance] Mode detected: {mode}")
 
+        # ── Build content array ───────────────────────────────────────
         content = [{"type": "text", "text": prompt}]
 
         if mode == "first_frame":
-            img_url = _resolve(first_frame, first_frame_url)
+            img_url = _resolve_img(first_frame, first_frame_url)
             content.append({"type": "image_url", "image_url": {"url": img_url}})
 
         elif mode == "first_last":
-            first_url = _resolve(first_frame, first_frame_url)
-            last_url  = _resolve(last_frame,  last_frame_url)
-            content.append({"type": "image_url", "image_url": {"url": first_url}, "role": "first_frame"})
-            content.append({"type": "image_url", "image_url": {"url": last_url},  "role": "last_frame"})
+            content.append({"type": "image_url",
+                             "image_url": {"url": _resolve_img(first_frame, first_frame_url)},
+                             "role": "first_frame"})
+            content.append({"type": "image_url",
+                             "image_url": {"url": _resolve_img(last_frame, last_frame_url)},
+                             "role": "last_frame"})
 
         elif mode == "reference":
-            refs = [
+            for tensor, url_ov in [
                 (reference_image_1, ref_url_1),
                 (reference_image_2, ref_url_2),
                 (reference_image_3, ref_url_3),
                 (reference_image_4, ref_url_4),
-            ]
-            for tensor, url_override in refs:
-                resolved = _resolve(tensor, url_override)
+            ]:
+                resolved = _resolve_img(tensor, url_ov)
                 if resolved:
-                    content.append({
-                        "type":      "image_url",
-                        "image_url": {"url": resolved},
-                        "role":      "reference_image",
-                    })
+                    content.append({"type": "image_url",
+                                    "image_url": {"url": resolved},
+                                    "role": "reference_image"})
 
-        _append_reference_media(content, reference_video_url, reference_audio_url)
+        vid_str, aud_str = _resolve_media(reference_video, reference_video_url,
+                                          reference_audio, reference_audio_url)
+        _append_reference_media(content, vid_str, aud_str)
 
         payload = {
             "model":             model,
@@ -382,7 +435,9 @@ class SeedanceVideoGenerator:
         }
         _apply_resolution(payload, resolution)
 
-        video, last_frame_out, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        video, last_frame_out, all_frames, video_url, video_path = _run_task(
+            key, payload, poll_interval, max_wait
+        )
         return (video, last_frame_out, all_frames, video_url, video_path)
 
 
@@ -391,7 +446,7 @@ class SeedanceVideoGenerator:
 # ──────────────────────────────────────────────────────────────────
 
 class SeedanceTextToVideo:
-    """Generate a video from a text prompt using the Seedance 2 API (T2V mode)."""
+    """Generate a video from a text prompt (T2V mode)."""
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
@@ -410,23 +465,20 @@ class SeedanceTextToVideo:
                 "prompt": ("STRING", {
                     "multiline": True,
                     "default": "A girl holding a fox, the camera slowly pulls out.",
-                    "tooltip": "Use [Video 1] / [Audio 1] to reference media.",
+                    "tooltip": "Use [Video 1] / [Audio 1] to reference media in the prompt.",
                 }),
-                "model":           (SEEDANCE_MODELS,    {"default": SEEDANCE_MODELS[0]}),
-                "ratio":           (RATIO_OPTIONS,      {"default": "16:9"}),
-                "duration":        (DURATION_OPTIONS,   {"default": 5}),
-                "resolution":      (RESOLUTION_OPTIONS, {
+                "model":             (SEEDANCE_MODELS,    {"default": SEEDANCE_MODELS[0]}),
+                "ratio":             (RATIO_OPTIONS,      {"default": "16:9"}),
+                "duration":          (DURATION_OPTIONS,   {"default": 5}),
+                "resolution":        (RESOLUTION_OPTIONS, {
                     "default": "default",
                     "tooltip": "Output resolution. 'default' lets the API decide.",
                 }),
-                "generate_audio":  ("BOOLEAN", {"default": False}),
-                "watermark":       ("BOOLEAN", {"default": False}),
+                "generate_audio":    ("BOOLEAN", {"default": False}),
+                "watermark":         ("BOOLEAN", {"default": False}),
                 "return_last_frame": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": (
-                        "Ask the API to return a PNG of the last frame (no watermark). "
-                        "Useful for chaining consecutive videos."
-                    ),
+                    "tooltip": "Ask the API for a watermark-free PNG of the last frame.",
                 }),
                 "poll_interval": ("INT", {"default": 10, "min": 5,  "max": 60,   "step": 5,
                                           "tooltip": "Seconds between status-check requests."}),
@@ -451,12 +503,17 @@ class SeedanceTextToVideo:
         return_last_frame,
         poll_interval,
         max_wait,
+        reference_video=None,
         reference_video_url="",
+        reference_audio=None,
         reference_audio_url="",
     ):
         key     = resolve_api_key(api_key)
         content = [{"type": "text", "text": prompt}]
-        _append_reference_media(content, reference_video_url, reference_audio_url)
+
+        vid_str, aud_str = _resolve_media(reference_video, reference_video_url,
+                                          reference_audio, reference_audio_url)
+        _append_reference_media(content, vid_str, aud_str)
 
         payload = {
             "model":             model,
@@ -468,7 +525,10 @@ class SeedanceTextToVideo:
             "return_last_frame": return_last_frame,
         }
         _apply_resolution(payload, resolution)
-        video, last_frame, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+
+        video, last_frame, all_frames, video_url, video_path = _run_task(
+            key, payload, poll_interval, max_wait
+        )
         return (video, last_frame, all_frames, video_url, video_path)
 
 
@@ -499,17 +559,17 @@ class SeedanceI2VFirstFrame:
                 "prompt": ("STRING", {
                     "multiline": True,
                     "default": "The camera slowly zooms out.",
-                    "tooltip": "Describes how the image should be animated. Use [Video 1] / [Audio 1] to reference media.",
+                    "tooltip": "Describes how the image should be animated. Use [Video 1] / [Audio 1] in prompt.",
                 }),
-                "model":           (SEEDANCE_MODELS,    {"default": SEEDANCE_MODELS[0]}),
-                "ratio":           (RATIO_OPTIONS,      {"default": "adaptive"}),
-                "duration":        (DURATION_OPTIONS,   {"default": 5}),
-                "resolution":      (RESOLUTION_OPTIONS, {"default": "default"}),
-                "generate_audio":  ("BOOLEAN", {"default": False}),
-                "watermark":       ("BOOLEAN", {"default": False}),
+                "model":             (SEEDANCE_MODELS,    {"default": SEEDANCE_MODELS[0]}),
+                "ratio":             (RATIO_OPTIONS,      {"default": "adaptive"}),
+                "duration":          (DURATION_OPTIONS,   {"default": 5}),
+                "resolution":        (RESOLUTION_OPTIONS, {"default": "default"}),
+                "generate_audio":    ("BOOLEAN", {"default": False}),
+                "watermark":         ("BOOLEAN", {"default": False}),
                 "return_last_frame": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Ask the API to return a PNG of the last frame (no watermark). Useful for chaining consecutive videos.",
+                    "tooltip": "Ask the API for a watermark-free PNG of the last frame.",
                 }),
                 "poll_interval": ("INT", {"default": 10, "min": 5,  "max": 60,   "step": 5}),
                 "max_wait":      ("INT", {"default": 600, "min": 60, "max": 3600, "step": 60}),
@@ -517,7 +577,7 @@ class SeedanceI2VFirstFrame:
             "optional": {
                 "image_url_override": ("STRING", {
                     "default": "", "multiline": False,
-                    "tooltip": "Optional: paste a direct HTTP URL to use instead of the IMAGE input.",
+                    "tooltip": "HTTP URL override for the first frame (skips IMAGE input).",
                 }),
                 **_MEDIA_REF_OPTIONAL,
             },
@@ -538,7 +598,9 @@ class SeedanceI2VFirstFrame:
         poll_interval,
         max_wait,
         image_url_override="",
+        reference_video=None,
         reference_video_url="",
+        reference_audio=None,
         reference_audio_url="",
     ):
         key = resolve_api_key(api_key)
@@ -553,7 +615,9 @@ class SeedanceI2VFirstFrame:
             {"type": "text",      "text": prompt},
             {"type": "image_url", "image_url": {"url": img_url}},
         ]
-        _append_reference_media(content, reference_video_url, reference_audio_url)
+        vid_str, aud_str = _resolve_media(reference_video, reference_video_url,
+                                          reference_audio, reference_audio_url)
+        _append_reference_media(content, vid_str, aud_str)
 
         payload = {
             "model":             model,
@@ -565,7 +629,10 @@ class SeedanceI2VFirstFrame:
             "return_last_frame": return_last_frame,
         }
         _apply_resolution(payload, resolution)
-        video, last_frame, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+
+        video, last_frame, all_frames, video_url, video_path = _run_task(
+            key, payload, poll_interval, max_wait
+        )
         return (video, last_frame, all_frames, video_url, video_path)
 
 
@@ -576,8 +643,7 @@ class SeedanceI2VFirstFrame:
 class SeedanceI2VFirstLastFrame:
     """
     Generate a video that starts at *first_frame* and ends at *last_frame*.
-    Both images are sent with their respective roles so the model interpolates
-    the motion between them guided by the text prompt.
+    The model interpolates the motion between them guided by the text prompt.
     """
 
     CATEGORY     = "Seedance/Video Generation"
@@ -597,24 +663,24 @@ class SeedanceI2VFirstLastFrame:
                     "default": "Smooth camera movement between the two frames.",
                     "tooltip": "Use [Video 1] / [Audio 1] to reference media.",
                 }),
-                "model":           (SEEDANCE_MODELS,    {"default": SEEDANCE_MODELS[0]}),
-                "ratio":           (RATIO_OPTIONS,      {"default": "adaptive"}),
-                "duration":        (DURATION_OPTIONS,   {"default": 5}),
-                "resolution":      (RESOLUTION_OPTIONS, {"default": "default"}),
-                "generate_audio":  ("BOOLEAN", {"default": False}),
-                "watermark":       ("BOOLEAN", {"default": False}),
+                "model":             (SEEDANCE_MODELS,    {"default": SEEDANCE_MODELS[0]}),
+                "ratio":             (RATIO_OPTIONS,      {"default": "adaptive"}),
+                "duration":          (DURATION_OPTIONS,   {"default": 5}),
+                "resolution":        (RESOLUTION_OPTIONS, {"default": "default"}),
+                "generate_audio":    ("BOOLEAN", {"default": False}),
+                "watermark":         ("BOOLEAN", {"default": False}),
                 "return_last_frame": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Ask the API to return a PNG of the last frame (no watermark). Useful for chaining consecutive videos.",
+                    "tooltip": "Ask the API for a watermark-free PNG of the last frame.",
                 }),
                 "poll_interval": ("INT", {"default": 10, "min": 5,  "max": 60,   "step": 5}),
                 "max_wait":      ("INT", {"default": 600, "min": 60, "max": 3600, "step": 60}),
             },
             "optional": {
                 "first_frame_url": ("STRING", {"default": "", "multiline": False,
-                                               "tooltip": "Optional HTTP URL override for the first frame."}),
+                                               "tooltip": "HTTP URL override for the first frame."}),
                 "last_frame_url":  ("STRING", {"default": "", "multiline": False,
-                                               "tooltip": "Optional HTTP URL override for the last frame."}),
+                                               "tooltip": "HTTP URL override for the last frame."}),
                 **_MEDIA_REF_OPTIONAL,
             },
         }
@@ -636,25 +702,28 @@ class SeedanceI2VFirstLastFrame:
         max_wait,
         first_frame_url="",
         last_frame_url="",
+        reference_video=None,
         reference_video_url="",
+        reference_audio=None,
         reference_audio_url="",
     ):
         key = resolve_api_key(api_key)
 
-        def _resolve(tensor, url_override):
-            if url_override and url_override.strip().startswith("http"):
-                return url_override.strip()
+        def _resolve_img(tensor, url_ov):
+            if url_ov and url_ov.strip().startswith("http"):
+                return url_ov.strip()
             return tensor_to_base64(tensor)
-
-        first_url = _resolve(first_frame, first_frame_url)
-        last_url  = _resolve(last_frame,  last_frame_url)
 
         content = [
             {"type": "text",      "text": prompt},
-            {"type": "image_url", "image_url": {"url": first_url}, "role": "first_frame"},
-            {"type": "image_url", "image_url": {"url": last_url},  "role": "last_frame"},
+            {"type": "image_url", "image_url": {"url": _resolve_img(first_frame, first_frame_url)},
+             "role": "first_frame"},
+            {"type": "image_url", "image_url": {"url": _resolve_img(last_frame, last_frame_url)},
+             "role": "last_frame"},
         ]
-        _append_reference_media(content, reference_video_url, reference_audio_url)
+        vid_str, aud_str = _resolve_media(reference_video, reference_video_url,
+                                          reference_audio, reference_audio_url)
+        _append_reference_media(content, vid_str, aud_str)
 
         payload = {
             "model":             model,
@@ -666,7 +735,10 @@ class SeedanceI2VFirstLastFrame:
             "return_last_frame": return_last_frame,
         }
         _apply_resolution(payload, resolution)
-        video, last_frame_out, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+
+        video, last_frame_out, all_frames, video_url, video_path = _run_task(
+            key, payload, poll_interval, max_wait
+        )
         return (video, last_frame_out, all_frames, video_url, video_path)
 
 
@@ -681,9 +753,8 @@ class SeedanceI2VReference:
     Reference images inform the visual style, characters, or objects that
     should appear in the generated video — not locked to a specific frame.
 
-    NOTE: This mode uses the dedicated model  seedance-1-0-lite-i2v-250428.
-    In your prompt reference each image with [Image 1], [Image 2], etc.,
-    a reference video with [Video 1], and a reference audio with [Audio 1].
+    Use model seedance-1-0-lite-i2v-250428.
+    Reference images with [Image 1-4], video with [Video 1], audio with [Audio 1].
     """
 
     CATEGORY     = "Seedance/Video Generation"
@@ -708,15 +779,15 @@ class SeedanceI2VReference:
                         "[Video 1] for reference video, [Audio 1] for reference audio."
                     ),
                 }),
-                "model":           (SEEDANCE_REFERENCE_MODELS, {"default": SEEDANCE_REFERENCE_MODELS[0]}),
-                "ratio":           (RATIO_OPTIONS,             {"default": "16:9"}),
-                "duration":        (DURATION_OPTIONS,          {"default": 5}),
-                "resolution":      (RESOLUTION_OPTIONS,        {"default": "default"}),
-                "generate_audio":  ("BOOLEAN", {"default": False}),
-                "watermark":       ("BOOLEAN", {"default": False}),
+                "model":             (SEEDANCE_REFERENCE_MODELS, {"default": SEEDANCE_REFERENCE_MODELS[0]}),
+                "ratio":             (RATIO_OPTIONS,             {"default": "16:9"}),
+                "duration":          (DURATION_OPTIONS,          {"default": 5}),
+                "resolution":        (RESOLUTION_OPTIONS,        {"default": "default"}),
+                "generate_audio":    ("BOOLEAN", {"default": False}),
+                "watermark":         ("BOOLEAN", {"default": False}),
                 "return_last_frame": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Ask the API to return a PNG of the last frame (no watermark). Useful for chaining consecutive videos.",
+                    "tooltip": "Ask the API for a watermark-free PNG of the last frame.",
                 }),
                 "poll_interval": ("INT", {"default": 10, "min": 5,  "max": 60,   "step": 5}),
                 "max_wait":      ("INT", {"default": 600, "min": 60, "max": 3600, "step": 60}),
@@ -726,13 +797,13 @@ class SeedanceI2VReference:
                 "reference_image_3": ("IMAGE", {"tooltip": "Third  reference image ([Image 3] in prompt)."}),
                 "reference_image_4": ("IMAGE", {"tooltip": "Fourth reference image ([Image 4] in prompt)."}),
                 "ref_url_1": ("STRING", {"default": "", "multiline": False,
-                                         "tooltip": "Optional HTTP URL override for reference image 1."}),
+                                         "tooltip": "HTTP URL override for reference image 1."}),
                 "ref_url_2": ("STRING", {"default": "", "multiline": False,
-                                         "tooltip": "Optional HTTP URL override for reference image 2."}),
+                                         "tooltip": "HTTP URL override for reference image 2."}),
                 "ref_url_3": ("STRING", {"default": "", "multiline": False,
-                                         "tooltip": "Optional HTTP URL override for reference image 3."}),
+                                         "tooltip": "HTTP URL override for reference image 3."}),
                 "ref_url_4": ("STRING", {"default": "", "multiline": False,
-                                         "tooltip": "Optional HTTP URL override for reference image 4."}),
+                                         "tooltip": "HTTP URL override for reference image 4."}),
                 **_MEDIA_REF_OPTIONAL,
             },
         }
@@ -758,39 +829,40 @@ class SeedanceI2VReference:
         ref_url_2="",
         ref_url_3="",
         ref_url_4="",
+        reference_video=None,
         reference_video_url="",
+        reference_audio=None,
         reference_audio_url="",
     ):
         key = resolve_api_key(api_key)
 
-        def _resolve(tensor, url_override):
-            if url_override and url_override.strip().startswith("http"):
-                return url_override.strip()
+        def _resolve_img(tensor, url_ov):
+            if url_ov and url_ov.strip().startswith("http"):
+                return url_ov.strip()
             if tensor is None:
                 return None
             return tensor_to_base64(tensor)
 
         content = [{"type": "text", "text": prompt}]
 
-        refs = [
+        for tensor, url_ov in [
             (reference_image_1, ref_url_1),
             (reference_image_2, ref_url_2),
             (reference_image_3, ref_url_3),
             (reference_image_4, ref_url_4),
-        ]
-        for tensor, url_override in refs:
-            resolved = _resolve(tensor, url_override)
+        ]:
+            resolved = _resolve_img(tensor, url_ov)
             if resolved:
-                content.append({
-                    "type":      "image_url",
-                    "image_url": {"url": resolved},
-                    "role":      "reference_image",
-                })
+                content.append({"type": "image_url",
+                                 "image_url": {"url": resolved},
+                                 "role": "reference_image"})
 
         if len(content) == 1:
             raise ValueError("[Seedance] At least one reference image (or URL) must be provided.")
 
-        _append_reference_media(content, reference_video_url, reference_audio_url)
+        vid_str, aud_str = _resolve_media(reference_video, reference_video_url,
+                                          reference_audio, reference_audio_url)
+        _append_reference_media(content, vid_str, aud_str)
 
         payload = {
             "model":             model,
@@ -802,7 +874,10 @@ class SeedanceI2VReference:
             "return_last_frame": return_last_frame,
         }
         _apply_resolution(payload, resolution)
-        video, last_frame, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+
+        video, last_frame, all_frames, video_url, video_path = _run_task(
+            key, payload, poll_interval, max_wait
+        )
         return (video, last_frame, all_frames, video_url, video_path)
 
 

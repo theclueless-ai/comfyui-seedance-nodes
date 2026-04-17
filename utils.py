@@ -2,6 +2,7 @@ import base64
 import io
 import os
 import time
+import wave
 import requests
 import numpy as np
 from PIL import Image
@@ -13,7 +14,7 @@ except ImportError:
 
 
 # ------------------------------------------------------------------
-# ComfyUI tensor  →  base64 data-URI
+# ComfyUI IMAGE tensor  →  base64 data-URI
 # ------------------------------------------------------------------
 
 def tensor_to_base64(tensor) -> str:
@@ -35,6 +36,81 @@ def tensor_to_base64(tensor) -> str:
 
 
 # ------------------------------------------------------------------
+# ComfyUI AUDIO dict  →  base64 data-URI
+# ------------------------------------------------------------------
+
+def audio_to_base64(audio: dict) -> str:
+    """
+    Convert a ComfyUI AUDIO dict  {"waveform": Tensor(B,C,S), "sample_rate": int}
+    to a WAV base64 data-URI suitable for the API's audio_url field.
+
+    Uses only stdlib (wave module) — no extra dependencies.
+    """
+    waveform    = audio["waveform"]       # (batch, channels, samples)
+    sample_rate = int(audio["sample_rate"])
+
+    if hasattr(waveform, "cpu"):
+        waveform = waveform.cpu().numpy()
+    else:
+        waveform = np.asarray(waveform)
+
+    waveform = waveform[0]                # (channels, samples)
+    channels = waveform.shape[0]
+
+    # (channels, samples) → (samples, channels) → int16
+    waveform_t    = waveform.T            # (samples, channels)
+    waveform_i16  = (waveform_t * 32767).clip(-32768, 32767).astype(np.int16)
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)                # 16-bit PCM
+        wf.setframerate(sample_rate)
+        wf.writeframes(waveform_i16.tobytes())
+
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode("utf-8")
+    return f"data:audio/wav;base64,{b64}"
+
+
+# ------------------------------------------------------------------
+# ComfyUI VIDEO object / path  →  base64 data-URI
+# ------------------------------------------------------------------
+
+def video_to_base64(video) -> str:
+    """
+    Convert a ComfyUI VIDEO object (VideoFromFile) or a plain file-path string
+    to a base64 data-URI suitable for the API's video_url field.
+
+    Warns if the file exceeds 50 MB, as large payloads may be rejected by the API.
+    """
+    if isinstance(video, str):
+        path = video
+    elif hasattr(video, "video_path"):
+        path = video.video_path
+    elif hasattr(video, "path"):
+        path = video.path
+    else:
+        raise ValueError(f"[Seedance] Cannot extract file path from video object: {type(video)}")
+
+    size_mb = os.path.getsize(path) / (1024 * 1024)
+    if size_mb > 50:
+        print(
+            f"[Seedance] Warning: reference video is {size_mb:.1f} MB — "
+            "large payloads may exceed API limits. Consider using a URL instead."
+        )
+
+    ext  = os.path.splitext(path)[1].lower().lstrip(".")
+    mime = {"mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime"}.get(ext, "video/mp4")
+
+    with open(path, "rb") as f:
+        data = f.read()
+
+    b64 = base64.b64encode(data).decode("utf-8")
+    return f"data:{mime};base64,{b64}"
+
+
+# ------------------------------------------------------------------
 # Video download helpers
 # ------------------------------------------------------------------
 
@@ -45,8 +121,8 @@ def download_video(video_url: str, output_dir: str, prefix: str = "seedance") ->
     """
     os.makedirs(output_dir, exist_ok=True)
     timestamp = int(time.time())
-    filename = f"{prefix}_{timestamp}.mp4"
-    filepath = os.path.join(output_dir, filename)
+    filename  = f"{prefix}_{timestamp}.mp4"
+    filepath  = os.path.join(output_dir, filename)
 
     print(f"[Seedance] Downloading video → {filepath}")
     resp = requests.get(video_url, stream=True, timeout=120)
@@ -61,15 +137,13 @@ def download_video(video_url: str, output_dir: str, prefix: str = "seedance") ->
 
 
 # ------------------------------------------------------------------
-# Last-frame extraction
+# Frame extraction
 # ------------------------------------------------------------------
 
 def extract_last_frame(video_path: str):
     """
     Extract the last frame of a video file and return it as a ComfyUI
     IMAGE tensor  (1, H, W, C)  float32 in [0, 1].
-
-    Requires opencv-python (cv2).
     """
     import cv2
 
@@ -85,26 +159,15 @@ def extract_last_frame(video_path: str):
     cap.release()
 
     if not ret:
-        raise RuntimeError(
-            f"[Seedance] Could not read last frame from: {video_path}"
-        )
+        raise RuntimeError(f"[Seedance] Could not read last frame from: {video_path}")
 
-    # cv2 reads as BGR → convert to RGB
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    arr = frame_rgb.astype(np.float32) / 255.0  # (H, W, C)
+    arr       = frame_rgb.astype(np.float32) / 255.0  # (H, W, C)
 
     if torch is not None:
-        tensor = torch.from_numpy(arr).unsqueeze(0)  # (1, H, W, C)
-    else:
-        # Fallback: wrap in a list so ComfyUI still receives something iterable
-        tensor = arr[np.newaxis, ...]
+        return torch.from_numpy(arr).unsqueeze(0)   # (1, H, W, C)
+    return arr[np.newaxis, ...]
 
-    return tensor
-
-
-# ------------------------------------------------------------------
-# All-frames extraction
-# ------------------------------------------------------------------
 
 def extract_all_frames(video_path: str):
     """
@@ -130,7 +193,6 @@ def extract_all_frames(video_path: str):
         raise RuntimeError(f"[Seedance] No frames extracted from: {video_path}")
 
     arr = np.stack(frames, axis=0)  # (N, H, W, C)
-
     if torch is not None:
         return torch.from_numpy(arr)
     return arr
