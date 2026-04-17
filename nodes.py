@@ -71,18 +71,16 @@ SEEDANCE_MODELS = [
 ]
 
 SEEDANCE_REFERENCE_MODELS = [
-    "seedance-1-0-lite-i2v-250428",
     "dreamina-seedance-2-0-260128",
 ]
 
 ALL_MODELS = [
     "dreamina-seedance-2-0-260128",
-    "seedance-1-0-lite-i2v-250428",
 ]
 
 RATIO_OPTIONS      = ["16:9", "9:16", "1:1", "4:3", "3:4", "adaptive"]
 DURATION_OPTIONS   = [5, 10, 15]
-RESOLUTION_OPTIONS = ["default", "480p", "720p"]
+RESOLUTION_OPTIONS = ["default", "480p", "720p", "1080p"]
 
 
 # ──────────────────────────────────────────────────────────────────
