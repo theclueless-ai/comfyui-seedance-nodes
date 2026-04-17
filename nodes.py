@@ -21,7 +21,7 @@ except ImportError:
     OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "output")
 
 from .api_client import SeedanceAPIClient
-from .utils import tensor_to_base64, download_video, extract_last_frame, resolve_api_key
+from .utils import tensor_to_base64, download_video, extract_last_frame, extract_all_frames, resolve_api_key
 
 # ──────────────────────────────────────────────────────────────────
 # VIDEO type detection – requires ComfyUI with comfy_api available
@@ -92,7 +92,8 @@ def _run_task(api_key: str, payload: dict, poll_interval: int, max_wait: int):
     video_path = download_video(video_url, OUTPUT_DIR, prefix="seedance")
     video      = _make_video(video_path)
     last_frame = extract_last_frame(video_path)
-    return video, last_frame, video_url, video_path
+    all_frames = extract_all_frames(video_path)
+    return video, last_frame, all_frames, video_url, video_path
 
 
 def _apply_resolution(payload: dict, resolution: str) -> dict:
@@ -121,8 +122,8 @@ class SeedanceVideoGenerator:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -295,8 +296,8 @@ class SeedanceVideoGenerator:
         }
         _apply_resolution(payload, resolution)
 
-        video, last_frame_out, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
-        return (video, last_frame_out, video_url, video_path)
+        video, last_frame_out, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame_out, all_frames, video_url, video_path)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -310,8 +311,8 @@ class SeedanceTextToVideo:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -366,8 +367,8 @@ class SeedanceTextToVideo:
             "watermark":      watermark,
         }
         _apply_resolution(payload, resolution)
-        video, last_frame, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
-        return (video, last_frame, video_url, video_path)
+        video, last_frame, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame, all_frames, video_url, video_path)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -384,8 +385,8 @@ class SeedanceI2VFirstFrame:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -452,8 +453,8 @@ class SeedanceI2VFirstFrame:
             "watermark":      watermark,
         }
         _apply_resolution(payload, resolution)
-        video, last_frame, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
-        return (video, last_frame, video_url, video_path)
+        video, last_frame, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame, all_frames, video_url, video_path)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -470,8 +471,8 @@ class SeedanceI2VFirstLastFrame:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -541,8 +542,8 @@ class SeedanceI2VFirstLastFrame:
             "watermark":      watermark,
         }
         _apply_resolution(payload, resolution)
-        video, last_frame_out, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
-        return (video, last_frame_out, video_url, video_path)
+        video, last_frame_out, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame_out, all_frames, video_url, video_path)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -564,8 +565,8 @@ class SeedanceI2VReference:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -668,8 +669,8 @@ class SeedanceI2VReference:
             "watermark":      watermark,
         }
         _apply_resolution(payload, resolution)
-        video, last_frame, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
-        return (video, last_frame, video_url, video_path)
+        video, last_frame, all_frames, video_url, video_path = _run_task(key, payload, poll_interval, max_wait)
+        return (video, last_frame, all_frames, video_url, video_path)
 
 
 # ──────────────────────────────────────────────────────────────────

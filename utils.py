@@ -103,6 +103,40 @@ def extract_last_frame(video_path: str):
 
 
 # ------------------------------------------------------------------
+# All-frames extraction
+# ------------------------------------------------------------------
+
+def extract_all_frames(video_path: str):
+    """
+    Extract every frame of a video and return as a ComfyUI IMAGE batch
+    tensor  (N, H, W, C)  float32 in [0, 1].
+    """
+    import cv2
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"[Seedance] Could not open video: {video_path}")
+
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame_rgb.astype(np.float32) / 255.0)
+    cap.release()
+
+    if not frames:
+        raise RuntimeError(f"[Seedance] No frames extracted from: {video_path}")
+
+    arr = np.stack(frames, axis=0)  # (N, H, W, C)
+
+    if torch is not None:
+        return torch.from_numpy(arr)
+    return arr
+
+
+# ------------------------------------------------------------------
 # Resolve API key (node field  >  env variable)
 # ------------------------------------------------------------------
 
