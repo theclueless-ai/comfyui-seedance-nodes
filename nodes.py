@@ -76,13 +76,22 @@ SEEDANCE_REFERENCE_MODELS = [
 
 ALL_MODELS = [
     "dreamina-seedance-2-0-260128",
+    "seedance-1-5-pro-251215",
 ]
+
+# Per-model duration limits (max seconds). Models missing from the dict use the default max.
+MODEL_DURATION_LIMITS = {
+    "seedance-1-5-pro-251215": 12,
+}
 
 RATIO_OPTIONS      = ["16:9", "9:16", "1:1", "4:3", "3:4", "adaptive"]
 RESOLUTION_OPTIONS = ["default", "480p", "720p", "1080p"]
 
 _DURATION = ("INT", {"default": 5, "min": 4, "max": 15, "step": 1,
-                     "tooltip": "Video duration in seconds. Seedance 2.0 supports 4–15 s."})
+                     "tooltip": (
+                         "Video duration in seconds. Seedance 2.0 supports 4–15 s. "
+                         "seedance-1-5-pro-251215 is capped at 12 s."
+                     )})
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -377,6 +386,14 @@ class SeedanceVideoGenerator:
         reference_audio_url="",
     ):
         key = resolve_api_key(api_key)
+
+        model_max_duration = MODEL_DURATION_LIMITS.get(model)
+        if model_max_duration is not None and duration > model_max_duration:
+            print(
+                f"[Seedance] Model {model} supports a maximum duration of "
+                f"{model_max_duration}s; clamping {duration}s → {model_max_duration}s."
+            )
+            duration = model_max_duration
 
         def _resolve_img(tensor, url_override):
             if url_override and url_override.strip().startswith("http"):
