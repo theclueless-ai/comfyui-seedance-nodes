@@ -35,6 +35,81 @@ def tensor_to_base64(tensor) -> str:
     return f"data:image/png;base64,{b64}"
 
 
+def tensor_batch_to_base64_list(tensor) -> list:
+    """
+    Convert a ComfyUI IMAGE tensor  (B, H, W, C)  to a list of PNG
+    base64 data-URI strings, one per image in the batch.
+    """
+    if len(tensor.shape) == 3:
+        return [tensor_to_base64(tensor)]
+    return [tensor_to_base64(tensor[i]) for i in range(tensor.shape[0])]
+
+
+# ------------------------------------------------------------------
+# Image download / URL → IMAGE tensor
+# ------------------------------------------------------------------
+
+def url_to_image_tensor(url: str):
+    """
+    Download a single image URL and return a ComfyUI IMAGE tensor
+    of shape (1, H, W, C), float32 in [0, 1].
+    """
+    resp = requests.get(url, timeout=120)
+    resp.raise_for_status()
+    img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+    arr = np.array(img).astype(np.float32) / 255.0
+    if torch is not None:
+        return torch.from_numpy(arr).unsqueeze(0)
+    return arr[np.newaxis, ...]
+
+
+def urls_to_image_batch(urls: list):
+    """
+    Download a list of image URLs and return a ComfyUI IMAGE batch
+    tensor (N, H, W, C). If the returned images have different sizes,
+    all are resized to match the first one.
+    """
+    if not urls:
+        raise RuntimeError("[Seedream] No image URLs to download.")
+
+    pil_images = []
+    for u in urls:
+        resp = requests.get(u, timeout=120)
+        resp.raise_for_status()
+        pil_images.append(Image.open(io.BytesIO(resp.content)).convert("RGB"))
+
+    target_size = pil_images[0].size  # (W, H)
+    arrays = []
+    for img in pil_images:
+        if img.size != target_size:
+            img = img.resize(target_size, Image.LANCZOS)
+        arrays.append(np.array(img).astype(np.float32) / 255.0)
+
+    batch = np.stack(arrays, axis=0)  # (N, H, W, C)
+    if torch is not None:
+        return torch.from_numpy(batch)
+    return batch
+
+
+def download_image(url: str, output_dir: str, prefix: str = "seedream",
+                   ext: str = "png") -> str:
+    """
+    Download an image from *url* and save it in *output_dir*.
+    Returns the absolute path of the saved file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    timestamp = int(time.time() * 1000)
+    filename  = f"{prefix}_{timestamp}.{ext}"
+    filepath  = os.path.join(output_dir, filename)
+
+    resp = requests.get(url, stream=True, timeout=120)
+    resp.raise_for_status()
+    with open(filepath, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=8192):
+            f.write(chunk)
+    return filepath
+
+
 # ------------------------------------------------------------------
 # ComfyUI AUDIO dict  →  base64 data-URI
 # ------------------------------------------------------------------

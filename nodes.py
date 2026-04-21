@@ -36,9 +36,13 @@ except ImportError:
 from .api_client import SeedanceAPIClient
 from .utils import (
     tensor_to_base64,
+    tensor_batch_to_base64_list,
     audio_to_base64,
     video_to_base64,
     download_video,
+    download_image,
+    url_to_image_tensor,
+    urls_to_image_batch,
     extract_last_frame,
     extract_all_frames,
     resolve_api_key,
@@ -907,6 +911,261 @@ class SeedanceI2VReference:
         return (video, last_frame, all_frames, video_url, video_path)
 
 
+# ══════════════════════════════════════════════════════════════════
+# Seedream 5 – Image Generation Node
+# ══════════════════════════════════════════════════════════════════
+
+SEEDREAM_MODELS = [
+    "seedream-5-0-260128",
+    "seedream-5-0-lite-260128",
+]
+
+# Recommended output dimensions from the Seedream 5 documentation.
+# Keys are shown in the UI; values are the (width, height) that will
+# be sent to the API as `size = "WIDTHxHEIGHT"`.
+SEEDREAM_SIZE_PRESETS = {
+    "2K 1:1":   (2048, 2048),
+    "2K 4:3":   (2304, 1728),
+    "2K 3:4":   (1728, 2304),
+    "2K 16:9":  (2848, 1600),
+    "2K 9:16":  (1600, 2848),
+    "2K 3:2":   (2496, 1664),
+    "2K 2:3":   (1664, 2496),
+    "2K 21:9":  (3136, 1344),
+    "3K 1:1":   (3072, 3072),
+    "3K 4:3":   (3456, 2592),
+    "3K 3:4":   (2592, 3456),
+    "3K 16:9":  (4096, 2304),
+    "3K 9:16":  (2304, 4096),
+    "3K 3:2":   (3744, 2496),
+    "3K 2:3":   (2496, 3744),
+    "3K 21:9":  (4704, 2016),
+}
+
+SEEDREAM_SIZE_OPTIONS    = list(SEEDREAM_SIZE_PRESETS.keys()) + ["custom"]
+SEEDREAM_OUTPUT_FORMATS  = ["png", "jpeg"]
+
+# Reference-images + generated-images must be ≤ 15.
+SEEDREAM_MAX_TOTAL_IMAGES = 15
+
+
+class SeedreamImageGenerator:
+    """
+    ByteDance Seedream 5 – Image Generator.
+
+    Supports:
+      • Text-to-image / text-to-grouped-images
+      • Single-image-to-image   / single-image-to-grouped-images
+      • Multi-reference-images-to-image / multi-reference-to-grouped
+
+    The input IMAGE socket accepts a batch. Each image in the batch is sent
+    as a reference image. The constraint  (reference + generated) ≤ 15  is
+    enforced client-side.
+    """
+
+    CATEGORY     = "Seedance/Image Generation"
+    FUNCTION     = "generate"
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("images", "image_urls", "image_paths")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "api_key": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "tooltip": "BytePlus ARK API key. Leave empty to use ARK_API_KEY env variable.",
+                }),
+                "prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "Vibrant close-up editorial portrait, sharp focus on eyes, dramatic studio lighting.",
+                    "tooltip": "Text description of the image to generate.",
+                }),
+                "model": (SEEDREAM_MODELS, {
+                    "default": SEEDREAM_MODELS[0],
+                    "tooltip": "seedream-5-0-260128 (full) or seedream-5-0-lite-260128 (lite).",
+                }),
+                "size_preset": (SEEDREAM_SIZE_OPTIONS, {
+                    "default": "2K 1:1",
+                    "tooltip": (
+                        "Aspect-ratio + resolution preset. "
+                        "Choose 'custom' to use the width/height inputs instead."
+                    ),
+                }),
+                "width": ("INT", {
+                    "default": 2048, "min": 512, "max": 4704, "step": 8,
+                    "tooltip": "Custom image width (only used when size_preset = 'custom').",
+                }),
+                "height": ("INT", {
+                    "default": 2048, "min": 512, "max": 4704, "step": 8,
+                    "tooltip": "Custom image height (only used when size_preset = 'custom').",
+                }),
+                "sequential_image_generation": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": (
+                        "Enable grouped image generation. When True the model can return "
+                        "up to max_images related images in a single request."
+                    ),
+                }),
+                "max_images": ("INT", {
+                    "default": 1, "min": 1, "max": SEEDREAM_MAX_TOTAL_IMAGES, "step": 1,
+                    "tooltip": (
+                        "Maximum generated images (only used when sequential_image_generation is True). "
+                        "Reference images + generated images must be ≤ 15."
+                    ),
+                }),
+                "seed": ("INT", {
+                    "default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF,
+                    "control_after_generate": True,
+                    "tooltip": "Random seed. 0 = server picks a random seed.",
+                }),
+                "watermark": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Add a BytePlus watermark to the output image.",
+                }),
+                "fail_on_partial": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": (
+                        "When sequential generation returns fewer images than requested, "
+                        "raise an error instead of returning the partial batch."
+                    ),
+                }),
+                "output_format": (SEEDREAM_OUTPUT_FORMATS, {"default": "png"}),
+            },
+            "optional": {
+                "image": ("IMAGE", {
+                    "tooltip": (
+                        "Optional reference image(s). A batched IMAGE is sent as multiple "
+                        "reference images (multi-reference mode)."
+                    ),
+                }),
+                "image_url": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": (
+                        "Optional HTTP URL(s) to use instead of the IMAGE input. "
+                        "Separate multiple URLs with newlines."
+                    ),
+                }),
+            },
+        }
+
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_images(image_tensor, image_url_str):
+        """Return a list of image references (URLs or data-URIs) to send to the API."""
+        urls = [
+            line.strip()
+            for line in (image_url_str or "").splitlines()
+            if line.strip().startswith("http")
+        ]
+        if urls:
+            return urls
+        if image_tensor is not None:
+            return tensor_batch_to_base64_list(image_tensor)
+        return []
+
+    @staticmethod
+    def _resolve_size(size_preset, width, height):
+        if size_preset == "custom":
+            return f"{int(width)}x{int(height)}"
+        w, h = SEEDREAM_SIZE_PRESETS[size_preset]
+        return f"{w}x{h}"
+
+    # ------------------------------------------------------------------
+
+    def generate(
+        self,
+        api_key,
+        prompt,
+        model,
+        size_preset,
+        width,
+        height,
+        sequential_image_generation,
+        max_images,
+        seed,
+        watermark,
+        fail_on_partial,
+        output_format,
+        image=None,
+        image_url="",
+    ):
+        key = resolve_api_key(api_key)
+
+        ref_images = self._resolve_images(image, image_url)
+        n_refs     = len(ref_images)
+
+        # Enforce (reference + generated) ≤ 15.
+        if sequential_image_generation:
+            allowed_gen = SEEDREAM_MAX_TOTAL_IMAGES - n_refs
+            if allowed_gen < 1:
+                raise ValueError(
+                    f"[Seedream] Too many reference images ({n_refs}). "
+                    f"Reference + generated must be ≤ {SEEDREAM_MAX_TOTAL_IMAGES}."
+                )
+            if max_images > allowed_gen:
+                print(
+                    f"[Seedream] Clamping max_images {max_images} → {allowed_gen} "
+                    f"(reference + generated must be ≤ {SEEDREAM_MAX_TOTAL_IMAGES})."
+                )
+                max_images = allowed_gen
+
+        payload = {
+            "model":          model,
+            "prompt":         prompt,
+            "size":           self._resolve_size(size_preset, width, height),
+            "output_format":  output_format,
+            "response_format": "url",
+            "watermark":      bool(watermark),
+        }
+
+        if n_refs == 1:
+            payload["image"] = ref_images[0]
+        elif n_refs > 1:
+            payload["image"] = ref_images
+
+        if sequential_image_generation:
+            payload["sequential_image_generation"] = "auto"
+            payload["sequential_image_generation_options"] = {"max_images": int(max_images)}
+        else:
+            payload["sequential_image_generation"] = "disabled"
+
+        if seed and seed > 0:
+            payload["seed"] = int(seed)
+
+        print(f"[Seedream] Submitting image generation request (model={model}, size={payload['size']}).")
+        client   = SeedanceAPIClient(key)
+        response = client.images_generate(payload)
+
+        data = response.get("data") or []
+        if not data:
+            raise RuntimeError(f"[Seedream] Empty data in response: {response}")
+
+        urls = [item.get("url") for item in data if item.get("url")]
+        if not urls:
+            raise RuntimeError(f"[Seedream] No image URLs in response: {response}")
+
+        if sequential_image_generation and fail_on_partial and len(urls) < max_images:
+            raise RuntimeError(
+                f"[Seedream] Partial result: received {len(urls)} of {max_images} requested images."
+            )
+
+        print(f"[Seedream] Received {len(urls)} image(s); downloading.")
+        images_tensor = urls_to_image_batch(urls)
+
+        saved_paths = []
+        for u in urls:
+            try:
+                saved_paths.append(download_image(u, OUTPUT_DIR, prefix="seedream", ext=output_format))
+            except Exception as exc:
+                print(f"[Seedream] Warning: failed to save {u} ({exc}).")
+
+        return (images_tensor, "\n".join(urls), "\n".join(saved_paths))
+
+
 # ──────────────────────────────────────────────────────────────────
 # Registration map  (imported by __init__.py)
 # ──────────────────────────────────────────────────────────────────
@@ -917,6 +1176,7 @@ NODE_CLASS_MAPPINGS = {
     "SeedanceI2VFirstFrame":       SeedanceI2VFirstFrame,
     "SeedanceI2VFirstLastFrame":   SeedanceI2VFirstLastFrame,
     "SeedanceI2VReference":        SeedanceI2VReference,
+    "SeedreamImageGenerator":      SeedreamImageGenerator,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -925,4 +1185,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SeedanceI2VFirstFrame":       "Seedance – Image to Video (First Frame)",
     "SeedanceI2VFirstLastFrame":   "Seedance – Image to Video (First + Last Frame)",
     "SeedanceI2VReference":        "Seedance – Image to Video (Reference)",
+    "SeedreamImageGenerator":      "ByteDance Seedream 5",
 }

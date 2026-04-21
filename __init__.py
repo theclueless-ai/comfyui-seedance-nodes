@@ -20,6 +20,7 @@ Nodes available after installation
   • Seedance – Image to Video (First Frame)
   • Seedance – Image to Video (First + Last Frame)
   • Seedance – Image to Video (Reference)
+  • ByteDance Seedream 5                 (image generation)
 """
 
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS

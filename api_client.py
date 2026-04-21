@@ -4,6 +4,7 @@ import requests
 
 BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
 TASK_ENDPOINT = "/contents/generations/tasks"
+IMAGES_ENDPOINT = "/images/generations"
 
 class SeedanceAPIClient:
     """Thin HTTP wrapper around the BytePlus Ark content-generation API."""
@@ -16,6 +17,21 @@ class SeedanceAPIClient:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key.strip()}",
         }
+
+    # ------------------------------------------------------------------
+    # Synchronous image generation (Seedream)
+    # ------------------------------------------------------------------
+
+    def images_generate(self, payload: dict, timeout: int = 600) -> dict:
+        """
+        Call the synchronous /images/generations endpoint (Seedream).
+        Returns the parsed JSON response (contains a `data` array).
+        """
+        url = f"{self.base_url}{IMAGES_ENDPOINT}"
+        resp = requests.post(url, json=payload, headers=self.headers, timeout=timeout)
+        if not resp.ok:
+            raise RuntimeError(f"[Seedream] HTTP {resp.status_code} on POST {url} — {resp.text}")
+        return resp.json()
 
     # ------------------------------------------------------------------
     # Task lifecycle
