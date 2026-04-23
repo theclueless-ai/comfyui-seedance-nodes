@@ -162,7 +162,7 @@ def _run_task(api_key: str, payload: dict, poll_interval: int, max_wait: int):
     """
     Create a task, poll until done, download the video.
 
-    Returns: (video, last_frame, all_frames, video_url, video_path)
+    Returns: (video, last_frame, all_frames, video_url, video_path, last_frame_url)
     """
     # Validate reference_audio constraint before hitting the API
     roles = {item.get("role") for item in payload.get("content", [])}
@@ -204,7 +204,7 @@ def _run_task(api_key: str, payload: dict, poll_interval: int, max_wait: int):
     else:
         last_frame = extract_last_frame(video_path)
 
-    return video, last_frame, all_frames, video_url, video_path
+    return video, last_frame, all_frames, video_url, video_path, api_last_frame_url
 
 
 def _apply_resolution(payload: dict, resolution: str) -> None:
@@ -275,8 +275,8 @@ class SeedanceVideoGenerator:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path", "last_frame_url")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -465,10 +465,10 @@ class SeedanceVideoGenerator:
         }
         _apply_resolution(payload, resolution)
 
-        video, last_frame_out, all_frames, video_url, video_path = _run_task(
+        video, last_frame_out, all_frames, video_url, video_path, last_frame_url = _run_task(
             key, payload, poll_interval, max_wait
         )
-        return (video, last_frame_out, all_frames, video_url, video_path)
+        return (video, last_frame_out, all_frames, video_url, video_path, last_frame_url)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -480,8 +480,8 @@ class SeedanceTextToVideo:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path", "last_frame_url")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -556,10 +556,10 @@ class SeedanceTextToVideo:
         }
         _apply_resolution(payload, resolution)
 
-        video, last_frame, all_frames, video_url, video_path = _run_task(
+        video, last_frame, all_frames, video_url, video_path, last_frame_url = _run_task(
             key, payload, poll_interval, max_wait
         )
-        return (video, last_frame, all_frames, video_url, video_path)
+        return (video, last_frame, all_frames, video_url, video_path, last_frame_url)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -575,8 +575,8 @@ class SeedanceI2VFirstFrame:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path", "last_frame_url")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -660,10 +660,10 @@ class SeedanceI2VFirstFrame:
         }
         _apply_resolution(payload, resolution)
 
-        video, last_frame, all_frames, video_url, video_path = _run_task(
+        video, last_frame, all_frames, video_url, video_path, last_frame_url = _run_task(
             key, payload, poll_interval, max_wait
         )
-        return (video, last_frame, all_frames, video_url, video_path)
+        return (video, last_frame, all_frames, video_url, video_path, last_frame_url)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -678,8 +678,8 @@ class SeedanceI2VFirstLastFrame:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path", "last_frame_url")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -766,10 +766,10 @@ class SeedanceI2VFirstLastFrame:
         }
         _apply_resolution(payload, resolution)
 
-        video, last_frame_out, all_frames, video_url, video_path = _run_task(
+        video, last_frame_out, all_frames, video_url, video_path, last_frame_url_out = _run_task(
             key, payload, poll_interval, max_wait
         )
-        return (video, last_frame_out, all_frames, video_url, video_path)
+        return (video, last_frame_out, all_frames, video_url, video_path, last_frame_url_out)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -789,8 +789,8 @@ class SeedanceI2VReference:
 
     CATEGORY     = "Seedance/Video Generation"
     FUNCTION     = "generate"
-    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path")
+    RETURN_TYPES = (_VIDEO_TYPE, "IMAGE", "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video", "last_frame", "frames", "video_url", "video_path", "last_frame_url")
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -905,10 +905,10 @@ class SeedanceI2VReference:
         }
         _apply_resolution(payload, resolution)
 
-        video, last_frame, all_frames, video_url, video_path = _run_task(
+        video, last_frame, all_frames, video_url, video_path, last_frame_url = _run_task(
             key, payload, poll_interval, max_wait
         )
-        return (video, last_frame, all_frames, video_url, video_path)
+        return (video, last_frame, all_frames, video_url, video_path, last_frame_url)
 
 
 # ══════════════════════════════════════════════════════════════════
